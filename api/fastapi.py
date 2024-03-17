@@ -1,8 +1,8 @@
 from .models import User, Txt2ImgParams, Img2ImgParams
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends
 from fastapi.responses import Response
-from fastapi.security import OAuth2PasswordBearer
-from .utils import decode_jwt, get_public_key, comfyui_path
+from .utils import comfyui_path
+from .auth import get_token_header
 from .testmodel import check as check_model
 from .txt2img import txt2img
 from .img2img import img2img
@@ -11,25 +11,6 @@ import requests
 import os
 import subprocess
 import json
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-
-async def get_token_header(token: str = Depends(oauth2_scheme)):
-    if token is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Could not validate credentials",
-        )
-    user_id = decode_jwt(token, get_public_key())["sub"]
-    clerk_secret_key = os.environ["CLERK_SECRET_KEY"]
-    response = requests.get(
-        f"https://api.clerk.com/v1/users/{user_id}",
-        headers={"Authorization": f"Bearer {clerk_secret_key}"},
-    )
-    response.raise_for_status()
-    user_data = response.json()
-    return User(**user_data)
 
 
 web_app = FastAPI()

@@ -2,9 +2,20 @@ from modal import (
     Image,
     Stub,
     asgi_app,
+    web_endpoint,
     gpu,
     Secret,
     Volume,
+)
+
+import env_vars
+from api.fastapi import (
+    txt2img,
+    img2img,
+    Txt2ImgParams,
+    Img2ImgParams,
+    User,
+    get_token_header,
 )
 
 stub = Stub("comfyui")
@@ -17,12 +28,16 @@ comfy_image = (
 )
 
 with comfy_image.imports():
-    from api.fastapi import web_app
+    import os
+    import json
+    from fastapi import Depends, Response
+    from api.fastapi import web_app, get_token_header, txt2img
+    from api.models import Txt2ImgParams, User
 
 
-@stub.function(
-    gpu=gpu.A10G(count=1),
-    allow_concurrent_inputs=10,
+@stub.cls(
+    gpu=gpu.T4(count=1),
+    allow_concurrent_inputs=8,
     concurrency_limit=5,
     image=comfy_image,
     container_idle_timeout=60,
@@ -33,11 +48,28 @@ with comfy_image.imports():
         Secret.from_name("db"),
     ],
 )
-@asgi_app()
-def img_app():
-    from api.fastapi import web_app
+class Model:
+    from api.fastapi import (
+        txt2img,
+        img2img,
+        Txt2ImgParams,
+        Img2ImgParams,
+        User,
+        get_token_header,
+    )
 
-    return web_app
+    @web_endpoint(method="POST")
+    def _txt2img(self, params: Txt2ImgParams, user: User = Depends(get_token_header)):
+        return Response(
+            json.dumps(
+                txt2img(
+                    p=params,
+                    user=user,
+                    account_id=os.environ["CLOUDFLARE_IMAGES_ACCOUNT_ID"],
+                    api_key=os.environ["CLOUDFLARE_IMAGES_API_KEY"],
+                )
+            )
+        )
 
 
 @stub.function(

@@ -4,6 +4,7 @@ from comfy import cli_args
 import comfy.cmd.cuda_malloc
 import random
 import torch
+import subprocess
 
 cli_args.options.enable_args_parsing()
 cli_args.args.cpu = not torch.cuda.is_available()
@@ -18,25 +19,45 @@ from comfy.nodes import (
     SaveImage,
     LoraLoader,
     VAELoader,
+    LoadImage,
+    VAEEncode,
 )
 
-from .models import Txt2ImgParams, User
+from .models import Img2ImgParams, User
 from .sql import *
 from .utils import *
 
 
-def txt2img(p: Txt2ImgParams, account_id: str, api_key: str, user: User):
+def inpaint(p: Img2ImgParams, account_id: str, api_key: str, user: User):
     with torch.inference_mode():
         checkpointloadersimple = CheckpointLoaderSimple()
         vaeloader = VAELoader()
-        emptylatentimage = EmptyLatentImage()
+        latentimage = EmptyLatentImage()
         cliptextencode = CLIPTextEncode()
         ksamplersimple = KSampler()
         vaedecode = VAEDecode()
+        vaeencode = VAEEncode()
         saveimage = SaveImage()
+        loadimage = LoadImage()
+
+        imgname = str(random.randint(1, 2**64))
+        path = f"{comfyui_path}/input/{imgname}"
+
+        while os.path.exists(path):
+            imgname = str(random.randint(1, 2**64))
+            path = f"{comfyui_path}/input/{imgname}"
+
+        subprocess.call(
+            f'aria2c -d / -o "{path}" "{p.image}"',
+            shell=True,
+        )
+
+        image = loadimage.load_image(imgname)
 
         basemodel = checkpointloadersimple.load_checkpoint(ckpt_name=p.checkpoint)
         vae = vaeloader.load_vae(p.vae) if p.vae is not None else basemodel[2]
+
+        latentimage = vaeencode.encode(vae, image[0])
 
         model = basemodel
 
@@ -45,9 +66,6 @@ def txt2img(p: Txt2ImgParams, account_id: str, api_key: str, user: User):
                 basemodel[0], basemodel[1], lora[0], lora[1], 1
             )
 
-        emptylatentimage = emptylatentimage.generate(
-            width=p.width, height=p.height, batch_size=p.batch
-        )
         cliptextencode_pos = cliptextencode.encode(text=p.pos, clip=model[1])
         cliptextencode_neg = cliptextencode.encode(text=p.neg, clip=model[1])
         seed = random.randint(1, 2**64) if p.seed == -1 else p.seed
@@ -61,14 +79,14 @@ def txt2img(p: Txt2ImgParams, account_id: str, api_key: str, user: User):
             scheduler=p.scheduler,
             positive=cliptextencode_pos[0],
             negative=cliptextencode_neg[0],
-            latent_image=emptylatentimage[0],
-            denoise=1,
+            latent_image=latentimage[0],
+            denoise=p.denoise,
         )
 
-        vaedecode_Out = vaedecode.decode(samples=ksamplersimple_out[0], vae=vae)
+        vaedecode_out = vaedecode.decode(samples=ksamplersimple_out[0], vae=vae)
 
         saveimage_out = saveimage.save_images(
-            filename_prefix="ComfyUI", images=vaedecode_Out[0]
+            filename_prefix="ComfyUI", images=vaedecode_out[0]
         )
 
         res = []
@@ -82,15 +100,20 @@ def txt2img(p: Txt2ImgParams, account_id: str, api_key: str, user: User):
             saveimage_out["ui"]["images"],
         ):
             ur = upload_image(
-                open(img, "rb").read(), account_id, api_key, f"{user.username}_t2i"
+                open(img, "rb").read(), account_id, api_key, f"{user.username}_i2i"
             )
             if ur["success"]:
                 res.append(ur["data"])
             else:
                 return ur
 
-        user = session.query(User).filter(User.username == user.username).first()
+        user = session.query(Users).filter(Users.username == user.username).first()
         user.tokens = user.tokens - calculate_tokens(p)
         session.commit()
+
+        subprocess.call(
+            f'rm -f "{path}"',
+            shell=True,
+        )
 
         return res
